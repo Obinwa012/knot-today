@@ -2,7 +2,9 @@ import * as Phaser from 'phaser';
 import { PlayScene } from './scenes/PlayScene.ts';
 
 new Phaser.Game({
-  type: Phaser.AUTO,
+  // Canvas holds 60fps even on software rendering; WebGL dropped to ~7fps
+  // there with this many redrawn lines. Revisit when the 3D yarn render lands.
+  type: Phaser.CANVAS,
   parent: 'game',
   backgroundColor: '#f3ebdd',
   // Portrait phone layout, scaled to fit any window.

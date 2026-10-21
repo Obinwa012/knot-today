@@ -1,8 +1,8 @@
 # Knot Today: playable prototype
 
 A grey-box web prototype of the core verb from the Knot Today spec (v2.1,
-prototype gate only). One hand-authored level, built with TypeScript, Phaser 4
-and Vite.
+prototype gate only). Seven hand-made levels, four with Twin Beads, built with
+TypeScript, Phaser 4 and Vite.
 
 ## Run it on your computer
 
@@ -16,7 +16,10 @@ Other commands:
 
 - `npm test` runs the logic tests (rules, solvability, solver checks).
 - `npm run build` type-checks and builds the static site into `dist/`.
-- `node scripts/design-level.ts` prints level 1's crossings and solver numbers.
+- `node scripts/design-level.ts` prints each level's par, budget and how a lazy
+  player does.
+- `node scripts/find-tops.ts braid.json` helps tune a new braid shape (see the
+  comment at the top of the file).
 
 ## How to play
 
@@ -27,7 +30,11 @@ Other commands:
   or its lettered handle to pull it out. Its crossings disappear with it.
 - Tap a strand that is not ready and the crossings holding it down flash red.
 - Press and hold a strand to fade the others and trace its path.
-- Free all five. Par (the fewest possible flips) is 3. "Start over" resets.
+- Gold thread ties two crossings to one Twin Bead. Tap either crossing and
+  both flip, for one flip.
+- Each level has a flip budget (top right). Run out with strands still stuck
+  and the level is lost. Par is the fewest flips possible. Retrying is free.
+- Free every strand to win. "Start over" resets; ‹ and › change level.
 
 ## Deploy to Vercel
 
@@ -37,9 +44,11 @@ import it. Vercel detects Vite; `vercel.json` pins the build command
 
 ## Layout
 
-- `src/logic/` pure rules, no Phaser: `puzzle.ts` (state, flip, free),
-  `solver.ts` (exact search, best freeing order, the spec's greedy players),
+- `src/logic/` pure rules, no Phaser: `puzzle.ts` (state, flip, free, Twin
+  Beads, budget), `search.ts` (exact solver and the "free whatever's easiest"
+  lazy player), `solver.ts` (freeing-order shortcuts for bead-free levels),
   `braid.ts` (builds a level from a braid word), `geometry.ts` (curves).
-- `src/levels/level1.ts` the hand-authored level, written as a braid word.
+- `src/levels/index.ts` the seven levels, each written as a braid word plus
+  starting tops, Twin Beads and a flip budget.
 - `src/scenes/PlayScene.ts` the Phaser scene: drawing, taps, animation.
 - `tests/` Vitest tests.

@@ -1,9 +1,9 @@
 import * as Phaser from 'phaser';
 import { Puzzle } from '../logic/puzzle.ts';
 import { distToPath, samplePath } from '../logic/geometry.ts';
-import { optimalOrders } from '../logic/solver.ts';
+import { Engine } from '../logic/search.ts';
 import type { CrossingDef, LevelDef, Pattern, Point, StrandDef } from '../logic/types.ts';
-import { level1 } from '../levels/level1.ts';
+import { LEVELS } from '../levels/index.ts';
 
 const W = 720;
 const H = 1280;
@@ -16,6 +16,14 @@ const CROSS_HIT = 42;
 const STRAND_HIT = 24;
 const HANDLE_R = 22;
 const HOLD_MS = 260;
+const BEAD = 0xb8862b;
+
+const parCache = new Map<string, number>();
+function parOf(level: LevelDef): number {
+  if (!parCache.has(level.id)) parCache.set(level.id, new Engine(level).solve().flips);
+  return parCache.get(level.id)!;
+}
+const FIRST_BEAD_LEVEL = LEVELS.findIndex((l) => l.crossings.some((c) => c.bead));
 
 interface Mark {
   x: number;
@@ -64,7 +72,8 @@ function marksAlong(path: Point[], spacing: number, offset: number): Mark[] {
 }
 
 export class PlayScene extends Phaser.Scene {
-  private level: LevelDef = level1;
+  private index = 0;
+  private level!: LevelDef;
   private puzzle!: Puzzle;
   private par = 0;
   private views: StrandView[] = [];
@@ -77,6 +86,7 @@ export class PlayScene extends Phaser.Scene {
   /** Per-crossing animation clocks, 0..1. */
   private flipPulse = new Map<string, number>();
   private blockedFlash = new Map<string, number>();
+  private budgetFlash = 0;
   private focus: string | null = null;
   private press: { strand: string; timer: Phaser.Time.TimerEvent } | null = null;
   private taps = 0;
@@ -86,9 +96,24 @@ export class PlayScene extends Phaser.Scene {
     super('play');
   }
 
+  /** Runs on every (re)start, so per-attempt state is reset here. */
+  init(data: { index?: number }): void {
+    this.index = Math.max(0, Math.min(LEVELS.length - 1, data.index ?? 0));
+    this.level = LEVELS[this.index];
+    this.winLayer = undefined;
+    this.labels = new Map();
+    this.flipPulse = new Map();
+    this.blockedFlash = new Map();
+    this.budgetFlash = 0;
+    this.focus = null;
+    this.press = null;
+    this.taps = 0;
+    this.misses = 0;
+  }
+
   create(): void {
     this.puzzle = new Puzzle(this.level);
-    this.par = optimalOrders(this.level).cost;
+    this.par = parOf(this.level);
     this.views = this.level.strands.map((def, i) => {
       const path = samplePath(def.points);
       return { def, path, marks: marksAlong(path, 30, 14 + i * 4), end: path[path.length - 1], slide: 0, shake: 0 };
@@ -98,13 +123,19 @@ export class PlayScene extends Phaser.Scene {
     this.g = this.add.graphics();
 
     this.add.text(36, 40, 'Knot Today', { fontFamily: FONT, fontSize: '40px', fontStyle: 'bold', color: '#3b3029' }).setResolution(2);
-    this.add.text(36, 92, `Level 1 · ${this.level.name}`, { fontFamily: FONT, fontSize: '24px', color: '#7a6a5c' }).setResolution(2);
+    this.add.text(36, 92, `Level ${this.index + 1} of ${LEVELS.length} · ${this.level.name}`, { fontFamily: FONT, fontSize: '24px', color: '#7a6a5c' }).setResolution(2);
     this.flipsText = this.add
       .text(W - 36, 46, '', { fontFamily: FONT, fontSize: '30px', color: '#3b3029', align: 'right' })
       .setOrigin(1, 0)
       .setResolution(2);
+    const hint =
+      this.index === 0
+        ? 'Tap a crossing to flip it. When a strand glows,\ntap it to pull it free.'
+        : this.index === FIRST_BEAD_LEVEL
+          ? 'Gold thread ties two crossings to one bead.\nTap either one and both flip, for one flip.'
+          : '';
     this.hintText = this.add
-      .text(W / 2, 150, 'Tap a crossing to flip it. When a strand glows,\ntap it to pull it free.', {
+      .text(W / 2, 150, hint, {
         fontFamily: FONT,
         fontSize: '22px',
         color: '#7a6a5c',
@@ -122,6 +153,8 @@ export class PlayScene extends Phaser.Scene {
     }
 
     this.makeButton(W / 2, H - 80, 'Start over', () => this.restart());
+    if (this.index > 0) this.makeButton(90, H - 80, '‹', () => this.goTo(this.index - 1), 84);
+    if (this.index < LEVELS.length - 1) this.makeButton(W - 90, H - 80, '›', () => this.goTo(this.index + 1), 84);
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.onDown(p.x, p.y));
     this.input.on('pointerup', () => this.onUp());
@@ -163,10 +196,17 @@ export class PlayScene extends Phaser.Scene {
     this.taps++;
     const c = this.crossingAt(x, y);
     if (c) {
-      this.puzzle.flip(c.id);
-      this.flipPulse.set(c.id, 0);
-      this.blockedFlash.delete(c.id);
+      const group = this.puzzle.flipGroup(c.id);
+      if (!this.puzzle.flip(c.id)) {
+        this.budgetFlash = 1; // out of flips
+        return;
+      }
+      for (const id of group) {
+        this.flipPulse.set(id, 0);
+        this.blockedFlash.delete(id);
+      }
       this.updateHud();
+      this.checkFailed();
       return;
     }
     const v = this.strandAt(x, y);
@@ -213,6 +253,7 @@ export class PlayScene extends Phaser.Scene {
       onComplete: () => {
         v.slide = 1;
         if (this.puzzle.solved) this.showWin();
+        else this.checkFailed();
       },
     });
     this.labels.get(id)!.setVisible(false);
@@ -222,14 +263,20 @@ export class PlayScene extends Phaser.Scene {
   // ---------------------------------------------------------------- hud
 
   private updateHud(): void {
-    this.flipsText.setText(`Flips ${this.puzzle.flips}\nPar ${this.par}`);
+    this.flipsText.setText(`Flips ${this.puzzle.flips} / ${this.level.budget}\nPar ${this.par}`);
   }
 
-  private makeButton(x: number, y: number, label: string, onTap: () => void): Phaser.GameObjects.Container {
+  private checkFailed(): void {
+    // A short beat before the result, and only if nothing changed meanwhile.
+    if (this.puzzle.failed) this.time.delayedCall(600, () => this.puzzle.failed && !this.winLayer && this.showFail());
+  }
+
+  private makeButton(x: number, y: number, label: string, onTap: () => void, width = 240): Phaser.GameObjects.Container {
     const bg = this.add.graphics();
-    bg.fillStyle(INK, 1).fillRoundedRect(-120, -32, 240, 64, 32);
-    const text = this.add.text(0, 0, label, { fontFamily: FONT, fontSize: '26px', color: '#f3ebdd' }).setOrigin(0.5).setResolution(2);
-    const box = this.add.container(x, y, [bg, text]).setSize(240, 64).setInteractive({ useHandCursor: true });
+    bg.fillStyle(INK, 1).fillRoundedRect(-width / 2, -32, width, 64, 32);
+    const size = label.length === 1 ? '40px' : '26px';
+    const text = this.add.text(0, label.length === 1 ? -3 : 0, label, { fontFamily: FONT, fontSize: size, color: '#f3ebdd' }).setOrigin(0.5).setResolution(2);
+    const box = this.add.container(x, y, [bg, text]).setSize(width, 64).setInteractive({ useHandCursor: true });
     box.on('pointerdown', (_p: Phaser.Input.Pointer, _x: number, _y: number, e: Phaser.Types.Input.EventData) => {
       e.stopPropagation();
       onTap();
@@ -238,6 +285,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private showWin(): void {
+    if (this.winLayer) return; // several strands can finish sliding at once
     const flips = this.puzzle.flips;
     const verdict = flips === this.par ? 'Perfect untangle!' : flips <= this.par + 2 ? 'Nicely done.' : 'Untangled!';
     const panel = this.add.graphics();
@@ -254,24 +302,39 @@ export class PlayScene extends Phaser.Scene {
       t(680, `Freed: ${this.puzzle.freedOrder.join(' → ')}`, 24, '#7a6a5c'),
       t(720, `Taps ${this.taps} · missed ${this.misses} (${missRate}%)`, 20, '#a3968a'),
     ]);
-    this.winLayer.add(this.makeButton(W / 2, 790, 'Play again', () => this.restart()));
+    const last = this.index === LEVELS.length - 1;
+    if (last) {
+      this.winLayer.add(t(380, 'The whole shop is untangled!', 30, '#fffaf2'));
+      this.winLayer.add(this.makeButton(W / 2, 790, 'Play again', () => this.restart()));
+    } else {
+      this.winLayer.add(this.makeButton(W / 2 - 130, 790, 'Replay', () => this.restart()));
+      this.winLayer.add(this.makeButton(W / 2 + 130, 790, 'Next level', () => this.goTo(this.index + 1)));
+    }
+  }
+
+  private showFail(): void {
+    if (this.winLayer) return;
+    const panel = this.add.graphics();
+    panel.fillStyle(0x000000, 0.35).fillRect(0, 0, W, H);
+    panel.fillStyle(0xfffaf2, 1).fillRoundedRect(80, 460, W - 160, 340, 28);
+    const t = (y: number, s: string, size: number, color = '#3b3029') =>
+      this.add.text(W / 2, y, s, { fontFamily: FONT, fontSize: `${size}px`, color, align: 'center' }).setOrigin(0.5).setResolution(2);
+    const left = this.level.strands.length - this.puzzle.freedOrder.length;
+    this.winLayer = this.add.container(0, 0, [
+      panel,
+      t(535, 'Out of flips', 38),
+      t(595, `${left} strand${left === 1 ? '' : 's'} still tangled. Biscuit looks pleased.`, 24, '#7a6a5c'),
+      t(640, `Par is ${this.par}. Retrying is always free.`, 22, '#a3968a'),
+    ]);
+    this.winLayer.add(this.makeButton(W / 2, 730, 'Try again', () => this.restart()));
   }
 
   private restart(): void {
-    this.winLayer?.destroy();
-    this.winLayer = undefined;
-    this.puzzle.reset();
-    this.flipPulse.clear();
-    this.blockedFlash.clear();
-    this.taps = 0;
-    this.misses = 0;
-    for (const v of this.views) {
-      v.slide = 0;
-      v.shake = 0;
-      this.labels.get(v.def.id)!.setVisible(true);
-    }
-    this.hintText.setVisible(true);
-    this.updateHud();
+    this.goTo(this.index);
+  }
+
+  private goTo(index: number): void {
+    this.scene.restart({ index });
   }
 
   // ---------------------------------------------------------------- drawing
@@ -287,6 +350,8 @@ export class PlayScene extends Phaser.Scene {
       if (n <= 0) this.blockedFlash.delete(id);
       else this.blockedFlash.set(id, n);
     }
+    this.budgetFlash = Math.max(0, this.budgetFlash - delta / 700);
+    this.flipsText.setColor(this.budgetFlash > 0 ? '#d1453b' : '#3b3029');
     this.draw();
   }
 
@@ -327,11 +392,26 @@ export class PlayScene extends Phaser.Scene {
       this.drawStrand(g, v, local, v.marks.filter(near), off, this.alphaOf(v), true);
     }
 
+    // Twin Beads: a gold thread between the crossings one bead flips.
+    const fade = this.focus ? 0.3 : 1;
+    const drawnBeads = new Set<string>();
+    for (const c of this.level.crossings) {
+      if (!c.bead || drawnBeads.has(c.bead)) continue;
+      drawnBeads.add(c.bead);
+      const pts = this.level.crossings.filter((k) => k.bead === c.bead && this.puzzle.isLive(k.id));
+      if (pts.length < 2) continue; // with one crossing left, a bead is just a crossing
+      g.lineStyle(5, BEAD, 0.75 * fade).lineBetween(pts[0].x, pts[0].y, pts[1].x, pts[1].y);
+      const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
+      g.fillStyle(INK, fade).fillCircle(mx, my, 11);
+      g.fillStyle(BEAD, fade).fillCircle(mx, my, 9);
+    }
+
     // Tap affordance and feedback rings.
     for (const c of this.level.crossings) {
       if (!this.puzzle.isLive(c.id)) continue;
-      const fade = this.focus ? 0.3 : 1;
-      g.lineStyle(2, INK, 0.16 * fade).strokeCircle(c.x, c.y, 30);
+      const beaded = this.puzzle.flipGroup(c.id).length > 1;
+      if (beaded) g.lineStyle(5, BEAD, 0.9 * fade).strokeCircle(c.x, c.y, 30);
+      else g.lineStyle(2, INK, 0.16 * fade).strokeCircle(c.x, c.y, 30);
       const p = this.flipPulse.get(c.id);
       if (p !== undefined) g.lineStyle(4, INK, 0.5 * (1 - p)).strokeCircle(c.x, c.y, 26 + 18 * p);
       const b = this.blockedFlash.get(c.id);
@@ -418,6 +498,9 @@ export class PlayScene extends Phaser.Scene {
           break;
         case 'rings':
           g.lineStyle(3, dark, alpha).strokeCircle(x, y, 5);
+          break;
+        case 'squares':
+          g.fillStyle(dark, alpha).fillRect(x - 4, y - 4, 8, 8);
           break;
       }
     }

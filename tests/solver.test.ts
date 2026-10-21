@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { exactMinFlips, optimalOrders } from '../src/logic/solver.ts';
+import { Engine, solveWithOptionalFrees } from '../src/logic/search.ts';
 import { Puzzle } from '../src/logic/puzzle.ts';
-import { level1 } from '../src/levels/level1.ts';
+import { LEVELS } from '../src/levels/index.ts';
+
+// Level 1 has no beads, so the freeing-order shortcut applies. Budget lifted
+// so these tests can flip freely.
+const level1 = { ...LEVELS[0], budget: 99 };
 import type { LevelDef } from '../src/logic/types.ts';
 
 const withTops = (mask: number): LevelDef => ({
@@ -31,6 +36,18 @@ describe('Solver', () => {
           crossings: lv.crossings.filter((c) => c.a !== s.id && c.b !== s.id),
         };
         expect(optimalOrders(rest).cost).toBe(before);
+      }
+    }
+  });
+
+  it('with Twin Beads too, pulling free strands right away never costs extra flips', () => {
+    // Engine.solve frees strands the moment it can; a search where freeing
+    // is optional (and so could wait) never finds anything shorter.
+    for (const level of LEVELS.filter((l) => l.crossings.some((c) => c.bead))) {
+      const e = new Engine(level);
+      for (let tops = 0; tops < 1 << level.crossings.length; tops += 7) {
+        const b = { tops, freed: 0 };
+        expect(solveWithOptionalFrees(e, b)).toBe(e.solve(b).flips);
       }
     }
   });

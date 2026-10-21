@@ -3,7 +3,8 @@ import type { LevelDef } from './types.ts';
 /**
  * Solver helpers for the core rule. Two independent ways to get the optimum
  * (exhaustive state search and "best freeing order") so tests can check one
- * against the other.
+ * against the other. The freeing-order shortcut only holds without Twin
+ * Beads, where every crossing flips on its own.
  */
 
 type Tops = Record<string, string>;
@@ -12,65 +13,8 @@ function initialTops(level: LevelDef): Tops {
   return Object.fromEntries(level.crossings.map((c) => [c.id, c.top]));
 }
 
-/**
- * Exact minimum number of flips to free every strand, by 0-1 BFS over every
- * reachable (tops, freed) state. Flips cost 1, frees cost 0. Fine for the
- * prototype caps (6 strands, 12 crossings = 2^18 states at most).
- */
-export function exactMinFlips(level: LevelDef, tops: Tops = initialTops(level)): number {
-  const strands = level.strands.map((s) => s.id);
-  const cs = level.crossings;
-  const sIdx = new Map(strands.map((s, i) => [s, i]));
-  const ca = cs.map((c) => sIdx.get(c.a)!);
-  const cb = cs.map((c) => sIdx.get(c.b)!);
-  const allFreed = (1 << strands.length) - 1;
-  const n = cs.length;
-
-  // Bit i of the tops mask = crossing i has strand a on top. Bits of dead
-  // crossings are zeroed so equivalent states share one key.
-  const canon = (topMask: number, freed: number) => {
-    let m = topMask;
-    for (let i = 0; i < n; i++) {
-      if (freed & (1 << ca[i]) || freed & (1 << cb[i])) m &= ~(1 << i);
-    }
-    return m;
-  };
-  let startTop = 0;
-  cs.forEach((c, i) => {
-    if (tops[c.id] === c.a) startTop |= 1 << i;
-  });
-
-  const key = (t: number, f: number) => f * (1 << n) + t;
-  const dist = new Map<number, number>();
-  const deque: [number, number, number][] = [[canon(startTop, 0), 0, 0]];
-  while (deque.length) {
-    const [t, f, d] = deque.shift()!;
-    const k = key(t, f);
-    if (dist.has(k)) continue;
-    dist.set(k, d);
-    if (f === allFreed) return d;
-    // Frees (cost 0) go to the front.
-    for (let s = 0; s < strands.length; s++) {
-      if (f & (1 << s)) continue;
-      let ok = true;
-      for (let i = 0; i < n && ok; i++) {
-        const live = !(f & (1 << ca[i])) && !(f & (1 << cb[i]));
-        if (!live) continue;
-        const topIsA = (t & (1 << i)) !== 0;
-        if ((ca[i] === s && !topIsA) || (cb[i] === s && topIsA)) ok = false;
-      }
-      if (ok) {
-        const nf = f | (1 << s);
-        deque.unshift([canon(t, nf), nf, d]);
-      }
-    }
-    for (let i = 0; i < n; i++) {
-      const live = !(f & (1 << ca[i])) && !(f & (1 << cb[i]));
-      if (live) deque.push([t ^ (1 << i), f, d + 1]);
-    }
-  }
-  throw new Error('unreachable: every level is solvable by construction');
-}
+/** Exact minimum, by searching every reachable board. Handles Twin Beads. */
+export { exactMinFlips } from './search.ts';
 
 /**
  * Flips needed if strands are freed in this order and the player never

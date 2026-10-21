@@ -13,6 +13,10 @@ export interface BraidSpec {
   rows: number[][];
   /** Which strand starts on top, one per crossing in reading order. */
   tops: string[];
+  /** Twin Beads, each linking two crossings by their 1-based reading order. */
+  beads?: [number, number][];
+  /** Flips allowed. */
+  budget: number;
   layout: { left: number; right: number; top: number; bottom: number };
 }
 
@@ -37,14 +41,14 @@ export function buildBraidLevel(spec: BraidSpec): LevelDef {
       const [a, b] = [order[p], order[p + 1]];
       [next[p], next[p + 1]] = [b, a];
       const i = crossings.length;
-      const topId = spec.tops[i];
+      const topId = spec.tops[i] ?? a;
       if (topId !== a && topId !== b) throw new Error(`crossing ${i + 1}: top ${topId} is not ${a} or ${b}`);
       crossings.push({ id: `c${i + 1}`, a, b, top: topId, x: (slotX(p) + slotX(p + 1)) / 2, y: (rowY(r) + rowY(r + 1)) / 2 });
     }
     order = next;
     order.forEach((id, p) => paths.get(id)!.push({ x: slotX(p), y: rowY(r + 1) }));
   });
-  if (crossings.length !== spec.tops.length) throw new Error(`${crossings.length} crossings but ${spec.tops.length} tops`);
+  if (spec.tops.length && crossings.length !== spec.tops.length) throw new Error(`${crossings.length} crossings but ${spec.tops.length} tops`);
 
   // A short straight lead at each end so the strands read as hanging yarn.
   const lead = (bottom - top) / (rowCount - 1) / 2;
@@ -68,5 +72,13 @@ export function buildBraidLevel(spec: BraidSpec): LevelDef {
     c.y = near.y;
   }
 
-  return { id: spec.id, name: spec.name, strands, crossings };
+  (spec.beads ?? []).forEach(([p, q], i) => {
+    for (const n of [p, q]) {
+      const c = crossings[n - 1];
+      if (!c || c.bead) throw new Error(`bead ${i + 1}: crossing ${n} is missing or already beaded`);
+      c.bead = `bead${i + 1}`;
+    }
+  });
+
+  return { id: spec.id, name: spec.name, strands, crossings, budget: spec.budget };
 }

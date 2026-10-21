@@ -7,6 +7,8 @@ import type { LevelDef } from './types.ts';
  * Rules:
  *  - Each live crossing has exactly one of its two strands on top.
  *  - flip(c) swaps which strand is on top. Flipping twice is a no-op.
+ *    A Twin Bead links crossings: flipping one flips every live crossing on
+ *    the same bead, and counts as one flip.
  *  - A strand can be freed only when it is on top at every live crossing it
  *    belongs to. Freeing removes the strand and all of its crossings.
  */
@@ -62,13 +64,32 @@ export class Puzzle {
     return !this.freed.has(strandId) && this.blockersOf(strandId).length === 0;
   }
 
-  flip(crossingId: string): boolean {
+  /** The live crossings a tap on this crossing flips (itself plus its bead partners). */
+  flipGroup(crossingId: string): string[] {
     const c = this.level.crossings.find((k) => k.id === crossingId);
-    const top = this.tops.get(crossingId);
-    if (!c || top === undefined) return false;
-    this.tops.set(crossingId, top === c.a ? c.b : c.a);
+    if (!c || !this.tops.has(crossingId)) return [];
+    if (!c.bead) return [crossingId];
+    return this.level.crossings.filter((k) => k.bead === c.bead && this.tops.has(k.id)).map((k) => k.id);
+  }
+
+  flip(crossingId: string): boolean {
+    const group = this.flipGroup(crossingId);
+    if (!group.length || this.outOfFlips) return false;
+    for (const id of group) {
+      const c = this.level.crossings.find((k) => k.id === id)!;
+      this.tops.set(id, this.tops.get(id) === c.a ? c.b : c.a);
+    }
     this.flips++;
     return true;
+  }
+
+  get outOfFlips(): boolean {
+    return this.flips >= this.level.budget;
+  }
+
+  /** Out of flips with nothing left to pull free. */
+  get failed(): boolean {
+    return !this.solved && this.outOfFlips && !this.level.strands.some((s) => this.canFree(s.id));
   }
 
   free(strandId: string): boolean {

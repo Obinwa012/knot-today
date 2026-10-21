@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Puzzle } from '../src/logic/puzzle.ts';
-import { level1 } from '../src/levels/level1.ts';
+import { LEVELS } from '../src/levels/index.ts';
+
+// Level 1 has no beads, so the freeing-order shortcut applies. Budget lifted
+// so these tests can flip freely.
+const level1 = { ...LEVELS[0], budget: 99 };
 import type { LevelDef } from '../src/logic/types.ts';
 
 const withTops = (mask: number): LevelDef => ({
@@ -53,15 +57,15 @@ describe('Puzzle rules', () => {
   });
 
   it('only counts crossings that are still live after a neighbour leaves', () => {
-    // E is under B at c10; once B is gone, E no longer needs that flip.
+    // E is under D at c8 and under B at c10; once B is gone, only c8 is left.
     const p = new Puzzle(level1);
-    expect(p.blockersOf('E')).toEqual(['c10']);
+    expect(p.blockersOf('E')).toEqual(['c8', 'c10']);
     for (const id of p.blockersOf('B')) p.flip(id);
     for (const id of p.blockersOf('A')) p.flip(id);
     p.free('A');
     for (const id of p.blockersOf('B')) p.flip(id);
     expect(p.free('B')).toBe(true);
-    expect(p.blockersOf('E')).toEqual([]);
+    expect(p.blockersOf('E')).toEqual(['c8']);
   });
 
   it('reset puts the board back to the authored start', () => {
@@ -71,5 +75,43 @@ describe('Puzzle rules', () => {
     p.reset();
     expect(p.flips).toBe(0);
     expect(level1.crossings.every((c) => p.topOf(c.id) === c.top)).toBe(true);
+  });
+});
+
+describe('Twin Beads', () => {
+  const beaded = { ...LEVELS[2], budget: 99 };
+  const [c1, c2] = beaded.crossings.filter((c) => c.bead === 'bead1');
+
+  it('one tap flips both crossings on the bead, for one flip', () => {
+    const p = new Puzzle(beaded);
+    p.flip(c2.id);
+    expect(p.topOf(c1.id)).not.toBe(c1.top);
+    expect(p.topOf(c2.id)).not.toBe(c2.top);
+    expect(p.flips).toBe(1);
+    p.flip(c1.id);
+    expect(p.topOf(c1.id)).toBe(c1.top);
+    expect(p.topOf(c2.id)).toBe(c2.top);
+  });
+
+  it('once one beaded crossing is gone, the bead flips only the other', () => {
+    const p = new Puzzle(beaded);
+    const gone = [c1.a, c1.b].find((s) => s !== c2.a && s !== c2.b)!;
+    // Clear the way for that strand by flipping its other crossings only.
+    for (const id of p.blockersOf(gone)) if (id !== c1.id) p.flip(id);
+    if (p.topOf(c1.id) !== gone) p.flip(c1.id);
+    for (const id of p.blockersOf(gone)) if (id !== c1.id) p.flip(id);
+    expect(p.free(gone)).toBe(true);
+    expect(p.flipGroup(c2.id)).toEqual([c2.id]);
+  });
+});
+
+describe('Move budget', () => {
+  it('stops flips at the budget and fails the level when nothing can be pulled', () => {
+    const p = new Puzzle(LEVELS[1]);
+    const c = LEVELS[1].crossings[0].id;
+    for (let i = 0; i < LEVELS[1].budget; i++) expect(p.flip(c)).toBe(true);
+    expect(p.flip(c)).toBe(false);
+    expect(p.flips).toBe(LEVELS[1].budget);
+    expect(p.failed).toBe(LEVELS[1].strands.every((s) => !p.canFree(s.id)));
   });
 });
